@@ -1,0 +1,12 @@
+This is going to have to do.
+
+I've tested it only on clisp and sbcl, both running on windows.
+Requires cl-opengl.
+
+Hold left mouse button to fire the guns; low damage but slight knockback.
+
+Right mouse button fires a missile.
+
+Space bar to pause and enter the menu, you can buy stuff there with the number keys.
+
+Escape at any time to escape.
