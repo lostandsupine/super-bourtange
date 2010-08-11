@@ -1,0 +1,1020 @@
+(require 'asdf)
+(asdf:load-system :cl-opengl)
+(asdf:load-system :cl-glu)
+(asdf:load-system :cl-glut)
+
+(defun sqr (x)
+  (* x x))
+
+(defun round-to-n (number n)
+  (/ (round (* number (expt 10 n))) (expt 10 n)))
+
+;;Input of 3 binomial pairs, outputs the coefficients A,B, and C for y = Ax^2 + Bx + C, the parabola through the three inputted points.
+(defun parabola (xy1 xy2 xy3)
+  (if (not (and (listp xy1) (listp xy2) (listp xy3)))
+      (return-from parabola nil))
+  (if (not (and (= (length xy1) 2) (= (length xy2) 2) (= (length xy3))))
+      (return-from parabola nil))
+  (let (a b c x1 y1 x2 y2 x3 y3)
+    (setf x1 (elt xy1 0))
+    (setf y1 (elt xy1 1))
+    (setf x2 (elt xy2 0))
+    (setf y2 (elt xy2 1))
+    (setf x3 (elt xy3 0))
+    (setf y3 (elt xy3 1))
+    (dolist (i (list x1 x2 x3 y1 y2 y3))
+      (if (not (numberp i))
+	  (return-from parabola nil)))
+    (if (not (or (= x1 x2) (= x1 x3) (= x2 x3)))
+	(progn
+	  (setf b (/ (- y2 y3 (/ (* (- y1 y2) (- (sqr x2) (sqr x3))) (- (sqr x1) (sqr x2)))) (- (+ x2 (/ (* (- x2 x1) (-  (sqr x2) (sqr x3))) (- (sqr x1) (sqr x2)))) x3)))
+	  (setf a (/ (- y1 y2 (* b (- x1 x2))) (- (sqr x1) (sqr x2))))
+	  (setf c (- y1 (* a (sqr x1)) (* b x1)))
+	  (list a b c))
+	(progn
+	  (if (= x1 x2)
+	      (setf x2 (+ x2 1)))
+	  (if (= x1 x3)
+	      (setf x3 (+ x3 1)))
+	  (if (= x2 x3)
+	      (setf x3 (+ x3 1)))
+	  (parabola (list x1 y1) (list x2 y2) (list x3 y3))))))
+
+(defparameter *height* 500)
+(defparameter *width* 800)
+(defparameter *object-list* (list ))
+(defparameter *meteor-count* 0)
+(defparameter *gunfire-list* (list ))
+(defparameter *missile-list* (list ))
+(defparameter *missile-speed* 30)
+(defparameter *missile-size* 10)
+(defparameter *gunfire-speed* 30)
+(defparameter *gunfire-rate* 100)
+(defparameter *gunfiring* nil)
+(defparameter *gunfire-coords* (list 0 0))
+(defparameter *gunfire-count* 0)
+(defparameter *gunfire-dmg* 20)
+(defparameter *gunfire-knockback* 5)
+(defparameter *exiting* nil)
+(defparameter *paused* nil)
+(defparameter *missile-mag* 10)
+(defparameter *missile-max* 10)
+(defparameter *missile-refresh-rate* 500)
+(defparameter *missile-list* nil)
+(defparameter *missile-count* 0)
+(defparameter *missile-dmg* 600)
+(defparameter *rain-frequency* 2500)
+(defparameter *initial-rain-frequency* 3000)
+(defparameter *rain-number* 1)
+(defparameter *initial-rain-size* 15)
+(defparameter *rain-size* 15)
+(defparameter *rain-speed* 4)
+(defparameter *moon-base-hp* 5000)
+(defparameter *moon-base-hp-max* 5000)
+(defparameter *explosion-list* nil)
+(defparameter *cash-monies* 0)
+(defparameter *cash-frequency* 1000)
+(defparameter *godmode* nil)
+
+(defun end-game ()
+  (setf *exiting* t)
+  (glut:destroy-current-window))
+
+;;Given a point, and the x-axis and y-axis intercepts outputs the coordinates of the point lying on the y-axis such that the apex of the parabola through three points is that point.
+;;I don't think I actually ended up using this, it was too hard to aim with a parabola that always touched the edge of the screen.
+(defun edge-parabola (point1 yint xint)
+  (let ((x1 (elt point1 0)) (y1 (elt point1 1)))
+    (if (not (= yint y1))
+	(if (= xint 0)
+	    (list (/ (+ (* (- yint xint) x1 -2) (sqrt (+ (sqr (* 2 (- yint xint) x1)) (* 4 (- y1 yint) (- yint xint) (sqr x1))))) (* 2 (- y1 yint))) xint)
+	    (list (/ (- (* (- yint xint) x1 -2) (sqrt (+ (sqr (* 2 (- yint xint) x1)) (* 4 (- y1 yint) (- yint xint) (sqr x1))))) (* 2 (- y1 yint))) xint))
+	(list (/ x1 2) xint))))
+
+;;Outputs a list of n ordered pairs for the parabola through the inputted points xy1, xy2, xy3. Starting at start, the 'x' element of each ordered pair increases by incr.
+(defun parabola-points (xy1 xy2 xy3 n start incr)
+  (let (pbola-function a b c point-list)
+    (setf pbola-function (parabola xy1 xy2 xy3))
+    (setf a (elt pbola-function 0))
+    (setf b (elt pbola-function 1))
+    (setf c (elt pbola-function 2))
+    (dotimes (i n)
+      (let ((x (+ start (* i incr))))
+	(setf point-list (append point-list (list (list x (+ (* a (sqr x)) (* b x) c)))))))
+    point-list))
+
+(defun random-between (n m)
+  (let (num)
+    (if (> m n)
+      (setf num (+ n (random (float(- m n))))))
+    (if (= m n)
+	(setf num m))
+    (if (< m n)
+      (setf num (+ m (random (float (- n m))))))
+    num))
+
+;;Given two lines, outputs the coordinates of their intersection, if any.
+;;This one is also unused, I started out doing hit-detection one way, then scrapped it, but left this function 'cause it seemed possibly useful.
+(defun line-intersect (line1 line2)
+  (let (m1 m2 x1 y1 x2 y2 a1 b1 a2 b2 intx inty xmin xmax)
+    (setf x1 (elt (elt line1 0) 0))
+    (setf y1 (elt (elt line1 0) 1))
+    (setf x2 (elt (elt line1 1) 0))
+    (setf y2 (elt (elt line1 1) 1))
+    (setf a1 (elt (elt line2 0) 0))
+    (setf b1 (elt (elt line2 0) 1))
+    (setf a2 (elt (elt line2 1) 0))
+    (setf b2 (elt (elt line2 1) 1))
+    (setf xmin (min x1 x2 a1 a2))
+    (setf xmax (max x1 x2 a1 a2))
+    (if (and (= x1 x2) (= a1 a2))
+	(if (and (= x1 a1) 
+		 (or (and (>= (max y1 y2) (min b1 b2)) (<= (min y1 y2) (max b1 b2))) 
+		     (and (<= (max y1 y2) (min b1 b2)) (>= (min y1 y2) (max b1 b2)))))
+	    (return-from line-intersect (list x1 (/ (+ (min (max y1 y2) (max b1 b2)) (max (min y1 y2) (min b1 b2))) 2)))
+	    (return-from line-intersect nil)))
+    (if (= x1 x2)
+	(progn
+	  (setf intx x1)
+	  (setf m2 (/ (- b2 b1) (- a2 a1)))
+	  (setf inty (- (+ (* m2 x1) b1) (* m2 a1)))
+	  (return-from line-intersect (list intx inty))))
+    (if (= a1 a2)
+	(progn
+	  (setf intx a1)
+	  (setf m1 (/ (- y2 y1) (- x2 x1)))
+	  (setf inty (- (+ (* m1 a1) y1) (* m1 x1)))
+	  (return-from line-intersect (list intx inty))))
+    (setf m1 (/ (- y2 y1) (- x2 x1)))
+    (setf m2 (/ (- b2 b1) (- a2 a1)))
+    (setf intx (/ (- (+ (* m1 x1) b1) y1 (* m2 a1)) (- m1 m2)))
+    (setf inty (+ (* m1 (- intx x1)) y1))
+    (if (and (>= intx xmin) (<= intx xmax))
+	(list intx inty)
+	nil)))
+
+;;Outputs angle relative to point1 in standard counter-clockwise fashion.
+(defun angle-between-2pts (point1 point2)
+  (let ((x1 (elt point1 0)) (y1 (elt point1 1)) (x2 (elt point2 0)) (y2 (elt point2 1)) (angle 0))
+    (if (> x2 x1)
+	(progn
+	  (if (> y2 y1)
+	      (setf angle (atan (/ (- y2 y1) (- x2 x1)))))
+	  (if (< y2 y1)
+	      (setf angle (- (* 2 pi) (atan (/ (- y1 y2) (- x2 x1))))))
+	  (if (= y2 y1)
+	      (setf angle 0))))
+    (if (< x2 x1)
+	(progn
+	  (if (> y2 y1)
+	      (setf angle (- pi (atan (/ (- y2 y1) (- x1 x2))))))
+	  (if (< y2 y1)
+	      (setf angle (+ pi (atan (/ (- y1 y2) (- x1 x2))))))
+	  (if (= y2 y1)
+	      (setf angle pi))))
+    (if (= x2 x1)
+	(progn
+	  (if (> y2 y1)
+	      (setf angle (/ pi 2)))
+	  (if (< y2 y1)
+	      (setf angle (* (/ pi 2) 3)))
+	  (if (= y2 y1)
+	      (setf angle nil))))
+    angle))
+
+(defun distance (point1 point2)
+  (sqrt (+ (sqr (- (elt point1 0) (elt point2 0))) (sqr (- (elt point1 1) (elt point2 1))))))
+
+;;Given two points, outputs the equation of a line through those points.
+(defun defline (point1 point2)
+  (let (m yint)
+    (if (= (elt point1 0) (elt point2 0))
+	(return-from defline (list nil (elt point1 0))))
+    (setf m (/ (- (elt point1 1) (elt point2 1)) (- (elt point1 0) (elt point2 0))))
+    (setf yint (- (elt point1 1) (* m (elt point1 0))))
+    (list m yint)))
+
+;;Returns true if given point falls inside the area of the given triangle.  Does this by comparing relative angles of the point and vertices of the triangle.
+(defun inside-trianglep (point triangle)
+  (let (ang1 ang2 tang1 tang2)
+    (setf ang1 (angle-between-2pts (elt triangle 0) point))
+    (setf ang2 (angle-between-2pts (elt triangle 1) point))
+    (setf tang1 (list (angle-between-2pts (elt triangle 0) (elt triangle 1)) (angle-between-2pts (elt triangle 0) (elt triangle 2))))
+    (setf tang1 (list (min (elt tang1 0) (elt tang1 1)) (max (elt tang1 0) (elt tang1 1))))
+    (setf tang2 (list (angle-between-2pts (elt triangle 1) (elt triangle 2)) (angle-between-2pts (elt triangle 1) (elt triangle 0))))
+    (setf tang2 (list (min (elt tang2 0) (elt tang2 1)) (max (elt tang2 0) (elt tang2 1))))
+    (if (> (- (elt tang1 1) (elt tang1 0)) pi)
+	(if (> (- (elt tang2 1) (elt tang2 0)) pi)
+	    (if (and (or (<= ang1 (elt tang1 0)) (>= ang1 (elt tang1 1))) (or (<= ang2 (elt tang2 0)) (>= ang2 (elt tang2 1))))
+		(return-from inside-trianglep t))
+	    (if (and (or (<= ang1 (elt tang1 0)) (>= ang1 (elt tang1 1))) (and (>= ang2 (elt tang2 0)) (<= ang2 (elt tang2 1))))
+		(return-from inside-trianglep t)))
+	(if (> (- (elt tang2 1) (elt tang2 0)) pi)
+	    (if (and (and (>= ang1 (elt tang1 0)) (<= ang1 (elt tang1 1))) (or (<= ang2 (elt tang2 0)) (>= ang2 (elt tang2 1))))
+		(return-from inside-trianglep t))
+	    (if (and (and (>= ang1 (elt tang1 0)) (<= ang1 (elt tang1 1))) (and (>= ang2 (elt tang2 0)) (<= ang2 (elt tang2 1))))
+		(return-from inside-trianglep t)))))
+  nil)
+
+;;Breaks up the area of a polygon(defined by its points) into non-overlapping triangles.
+(defun triangulize-points (points center)
+  (let (triangles)
+    (dotimes (i (length points))
+      (if (< i (- (length points) 1))
+	  (setf triangles (append triangles (list (list center (elt points i) (elt points (+ i 1))))))
+	  (setf triangles (append triangles (list (list center (elt points 0) (elt points i)))))))
+    triangles))
+
+(defun triangle-area (triangle)
+  (if (or (equal (elt triangle 0) (elt triangle 1)) (equal (elt triangle 0) (elt triangle 2)) (equal (elt triangle 1) (elt triangle 2)))
+      (return-from triangle-area 0))
+  (* (distance (elt triangle 0) (elt triangle 1)) 
+     (sin (abs (- (angle-between-2pts (elt triangle 0) (elt triangle 1))
+		  (angle-between-2pts (elt triangle 0) (elt triangle 2)))))
+     (distance (elt triangle 0) (elt triangle 2))
+     (/ 1 2)))
+
+;;Gets the area of a polygon by triangulizing it and adding up the area of each triangle.
+(defun point-shape-area (point-list center1)
+  (let ((shape-triangles (triangulize-points point-list center1)) (area 0))
+    (dotimes (i (length shape-triangles))
+      (setf area (+ area (triangle-area (elt shape-triangles i)))))
+    area))
+
+(defun triangles-area (triangle-list)
+  (let ((area 0))
+    (dotimes (i (length triangle-list))
+      (setf area (+ area (triangle-area (elt triangle-list i)))))
+    area))
+
+(defun circle (x y r n)
+  (let (circle-points cur-radius)
+    (dotimes (i n)
+      (setf cur-radius (* i (/ (* 2 pi) n)))
+      (setf circle-points (append circle-points (list (list (+ (* (cos cur-radius) r) x) (+ (* (sin cur-radius) r) y))))))
+    circle-points))
+
+;;Generates a list of n evenly spaced points that fall on the line through the 2 given points.
+(defun line (point1 point2 n)
+  (let ((line-points nil) (rise 0) (run 0) (incr1 0) (incr2 0))
+    (setf rise (- (elt point2 1) (elt point1 1)))
+    (setf run (- (elt point2 0) (elt point1 0)))
+    (setf incr1 (/ run n))
+    (setf incr2 (/ rise n))
+    (dotimes (i (+ 1 n))
+      (setf line-points (append line-points (list (list (+ (elt point1 0) (* i incr1)) (+ (elt point1 1) (* i incr2)))))))
+    line-points))
+
+;;Makes a SEVEN pointed star.......
+(defun star5 (x y r)
+  (let (star-points cur-radius)
+    (dotimes (i 7)
+      (setf cur-radius (* i (/ (* 2 pi) 7) 3))
+      (setf star-points (append star-points (list (list (+ (* (cos cur-radius) r) x) (+ (* (sin cur-radius) r) y))))))
+    star-points))
+
+;;Generates points for a randomly shaped polygon.
+(defun meteor (x y r n)
+  (let (meteor-points cur-degree cur-radius)
+    (dotimes (i n)
+      (setf cur-degree (+ (* i(/ (* 2 pi) n)) (if (= (random 2) 1)
+						   (random (/ (/ (* 2 pi) n) 3))
+						   (* -1 (random (/ (/ (* 2 pi) n) 3))))))
+      (setf cur-radius (+ (/ r 10) (random (* 2 r))))
+      (setf meteor-points (append meteor-points (list (list (+ (* (cos cur-degree) cur-radius) x) (+ (* (sin cur-degree) cur-radius) y))))))
+    meteor-points))
+
+;;Generates points for a randomly shaped polygon that will usually be convex.
+(defun convex-meteor (x y r n)
+  (let (meteor-points cur-degree cur-radius)
+    (dotimes (i n)
+      (setf cur-degree (+ (* i(/ (* 2 pi) n)) (if (= (random 2) 1)
+						   (random (/ (/ (* 2 pi) n) 3))
+						   (* -1 (random (/ (/ (* 2 pi) n) 3))))))
+      (setf cur-radius (random-between r (* 2 r)))
+      (setf meteor-points (append meteor-points (list (list (+ (* (cos cur-degree) cur-radius) x) (+ (* (sin cur-degree) cur-radius) y))))))
+    meteor-points))
+
+(defun draw-circle (x1 y1 r1 n1)
+  (let ((points (circle x1 y1 r1 n1)))
+    (dotimes (i (length points))
+      (gl:vertex (elt (elt points i) 0) (elt (elt points i) 1)))))
+
+;;Defines the class for a parabola with 2 slots: 1 for the function and 1 for the list of points, with initializers, and accessors.
+(defclass paraobj () ((function :initarg :function :accessor para-function)
+		      (point-list :initarg :point-list :accessor para-points)
+		      (defing-points :initarg :defing-points :accessor para-def-points)))
+
+(defclass genobj () ((xcoord :initarg :xcoord :accessor xcoord)
+		     (ycoord :initarg :ycoord :accessor ycoord)
+		     (xvel :initarg :xvel :accessor xvel)
+		     (yvel :initarg :yvel :accessor yvel)
+		     (path :initarg :path :accessor objpath)
+		     (rotv :initarg :rotv :accessor rotv)
+		     (points :initarg :points :accessor objpoints)
+		     (radius :initarg :radius :accessor objradius)
+		     (area :initarg :area :accessor objarea)
+		     (color :initarg :color :accessor objcolor)
+		     (style :initarg :style :accessor objstyle)))
+
+(defun make-genobj (x1 y1 xv1 yv1 rotv1 point-list radius1 color1 style1)
+  (make-instance 'genobj
+		 :xcoord x1
+		 :ycoord y1
+		 :xvel xv1
+		 :yvel yv1
+		 :path nil
+		 :rotv rotv1
+		 :points point-list
+		 :radius radius1
+		 :area (point-shape-area point-list (list x1 y1))
+		 :color color1
+		 :style style1))
+
+(defun make-missile (x1 y1 xv1 yv1 rotv1 path1 point-list radius1 color1 style1)
+  (make-instance 'genobj
+		 :xcoord x1
+		 :ycoord y1
+		 :xvel xv1
+		 :yvel yv1
+		 :path path1
+		 :rotv rotv1
+		 :points point-list
+		 :radius radius1
+		 :area (point-shape-area point-list (list x1 y1))
+		 :color color1
+		 :style style1))
+
+(defparameter *moon-base* (make-genobj (/ *width* 2) 0 0 0 0 (list (list (- (/ *width* 2) 20) 1) (list (- (/ *width* 2) 15) 25) (list (+ (/ *width* 2) 15) 25) (list (+ (/ *width* 2) 20) 1)) 35 (list 1 1 1) :line-loop))
+
+(defparameter *moon-base2* (make-genobj (/ *width* 2) 0 0 0 0 (line (list 0 1) (list *width* 1) 100) 10 (list 1 1 1) :line-strip))
+
+(defgeneric coords (gobj))
+(defmethod coords ((gobj genobj))
+  (list (xcoord gobj) (ycoord gobj)))
+
+(defgeneric draw-genobj (gobj))
+(defmethod draw-genobj ((gobj genobj))
+  (gl:color (elt (objcolor gobj) 0) (elt (objcolor gobj) 1) (elt (objcolor gobj) 2))
+  (gl:begin (objstyle gobj))
+  (let ((gpoints (objpoints gobj)))
+    (dotimes (i (length gpoints))
+      (gl:vertex (elt (elt gpoints i) 0) (elt (elt gpoints i) 1))))
+  (gl:end))
+
+(defgeneric move-genobj-by (gobj x1 y1))
+(defmethod move-genobj-by ((gobj genobj) x1 y1)
+  (setf (xcoord gobj) (+ (xcoord gobj) x1))
+  (setf (ycoord gobj) (+ (ycoord gobj) y1))
+  (let ((old-points (objpoints gobj)))
+    (dotimes (i (length old-points))
+      (setf (elt (elt old-points i) 0) (+ (elt (elt old-points i) 0) x1))
+      (setf (elt (elt old-points i) 1) (+ (elt (elt old-points i) 1) y1)))
+    (setf (objpoints gobj) old-points))
+  nil)
+
+
+(defgeneric move-genobj-to (gobj x1 y1))
+(defmethod move-genobj-to ((gobj genobj) x1 y1)
+  (let ((old-points (objpoints gobj))
+	(xdiff (- x1 (xcoord gobj)))
+	(ydiff (- y1 (ycoord gobj))))
+    (setf (xcoord gobj) x1)
+    (setf (ycoord gobj) y1)
+    (dotimes (i (length old-points))
+      (setf (elt (elt old-points i) 0) (+ (elt (elt old-points i) 0) xdiff))
+      (setf (elt (elt old-points i) 1) (+ (elt (elt old-points i) 1) ydiff)))
+    (setf (objpoints gobj) old-points)))
+
+(defun create-circle-obj (x1 y1 xv1 yv1 rotv1 r n)
+  (setf *object-list* (append *object-list* (list (make-genobj x1 y1 xv1 yv1 rotv1 (circle x1 y1 r n) r (list 1 1 1) :line-loop)))))
+
+(defparameter *missile-mag-circles* (list (make-genobj 291 6 0 0 0 (circle 291 6 5 8) 5 (list 0 1 1) :line-loop)
+					  (make-genobj 302 6 0 0 0 (circle 302 6 5 8) 5 (list 0 1 1) :line-loop)
+					  (make-genobj 313 6 0 0 0 (circle 313 6 5 8) 5 (list 0 1 1) :line-loop)
+					  (make-genobj 324 6 0 0 0 (circle 324 6 5 8) 5 (list 0 1 1) :line-loop)
+					  (make-genobj 335 6 0 0 0 (circle 335 6 5 8) 5 (list 0 1 1) :line-loop)
+					  (make-genobj 346 6 0 0 0 (circle 346 6 5 8) 5 (list 0 1 1) :line-loop)
+					  (make-genobj 357 6 0 0 0 (circle 357 6 5 8) 5 (list 0 1 1) :line-loop)
+					  (make-genobj 368 6 0 0 0 (circle 368 6 5 8) 5 (list 0 1 1) :line-loop)
+					  (make-genobj 379 6 0 0 0 (circle 379 6 5 8) 5 (list 0 1 1) :line-loop)
+					  (make-genobj 390 6 0 0 0 (circle 390 6 5 8) 5 (list 0 1 1) :line-loop)
+					  (make-genobj 401 6 0 0 0 (circle 401 6 5 8) 5 (list 0 1 1) :line-loop)))
+
+(defun make-missile-mag (n)
+  (setf *missile-mag-circles* nil)
+  (dotimes (i n)
+    (if (<= (* 10 i) (- (/ *width* 2) 10))
+	(setf *missile-mag-circles* (append *missile-mag-circles* (list (make-genobj (+ (/ *width* 2) (* 10 i)) 6 0 0 0 (circle (+ (/ *width* 2) (* 10 i)) 6 5 7) 5 (list 0 1 1) :line-loop))))
+	(setf *missile-mag-circles* (append *missile-mag-circles* (list (make-genobj (* 10 i) 16 0 0 0 (circle (* 10 i) 16 5 7) 5 (list 0 1 1) :line-loop)))))))
+
+(defun create-missile (path1)
+  (setf *missile-list* (append *missile-list* (list (list *missile-count* (make-missile (/ *width* 2) 0 0 0 1 path1 (star5 (/ *width* 2) 0 *missile-size*) *missile-size* (list 1 0 0) :line-loop)))))
+  (setf *missile-count* (+ *missile-count* 1))
+  nil)
+
+(defun create-meteor-obj (x1 y1 xv1 yv1 rotv1 r n)
+  (setf *object-list* (append *object-list* (list (make-genobj x1 y1 xv1 yv1 rotv1 (meteor x1 y1 r n) r (list 1 1 1) :line-loop)))))
+
+(defun create-gunfire-obj (x1 y1 vel rotv1 l)
+  (let (xv1 yv1 angle1)
+    (setf angle1 (angle-between-2pts (list (/ *width* 2) 0) (list x1 y1)))
+    (setf xv1 (* vel (cos angle1)))
+    (setf yv1 (* vel (sin angle1)))
+    (setf *gunfire-list* (append *gunfire-list* (list (list *gunfire-count* (make-genobj (/ *width* 2) 0 xv1 yv1 rotv1 (list (list (/ *width* 2) 0) (list (+ (/ *width* 2) (* l (cos angle1))) (* l (sin angle1)))) 2 (list 1 1 1) :line-strip)))))
+    (setf *gunfire-count* (+ *gunfire-count* 1))))
+
+(defun create-convex-meteor-obj (x1 y1 xv1 yv1 rotv1 r n)
+  (setf *object-list* (append *object-list* (list (make-genobj x1 y1 xv1 yv1 rotv1 (convex-meteor x1 y1 r n) r (list 1 1 1) :line-loop)))))
+
+(defun create-explosion-obj (x1 y1 r n)
+  (setf *explosion-list* (append *explosion-list* (list 0 (make-genobj x1 y1 0 0 (random-between -0.1 0.1) (circle x1 y1 r n) r (list 1 1 1) :points)))))
+
+;;(defun advance-explosions ()
+;;  (let ((remove-list nil))
+;;    (dotimes (i (length *explosion-list*))
+;;      (setf (elt (elt *explosion-list* i) 0) (+ (elt (elt *explosion-list* i)) 1))
+;;      (if (= (elt (elt *explosion-list* i) ) 4)*
+;;
+;;	  (setf remove-list (append remove-list (list i)))
+;;	  (setf (objpoints 
+
+
+(defun draw-object-list ()
+  (dotimes (i (length *object-list*))
+    (draw-genobj (elt *object-list* i))))
+
+(defun draw-missile-list ()
+  (dotimes (i (length *missile-list*))
+    (rotate-genobj-by (elt (elt *missile-list* i) 1) 0.6)
+    (draw-genobj (elt (elt *missile-list* i) 1))))
+
+(defun draw-gunfire-list ()
+  (dotimes (i (length *gunfire-list*))
+    (draw-genobj (elt (elt *gunfire-list* i) 1))))
+
+(defun draw-missile-mag ()
+  (dotimes (i *missile-mag*)
+    (draw-genobj (elt *missile-mag-circles* i))))
+
+(defgeneric rotate-genobj-by (gobj s))
+(defmethod rotate-genobj-by ((gobj genobj) s)
+  (let (cur-s cur-r center cur-x cur-y)
+    (setf center (list (xcoord gobj) (ycoord gobj)))
+    (dotimes (i (length (objpoints gobj)))
+      (setf cur-x (elt (elt (objpoints gobj) i) 0))
+      (setf cur-y (elt (elt (objpoints gobj) i) 1))
+      (setf cur-r (sqrt (+ (sqr (- cur-x (elt center 0))) (sqr (- cur-y (elt center 1))))))
+      (setf cur-s (angle-between-2pts center (list cur-x cur-y)))
+      (setf cur-s (+ cur-s s))
+      (setf (elt (elt (objpoints gobj) i) 0) (+ (* cur-r (cos cur-s)) (elt center 0)))
+      (setf (elt (elt (objpoints gobj) i) 1) (+ (* cur-r (sin cur-s)) (elt center 1))))))
+
+(defun rotate-about-center (center point s)
+  (let (cur-s cur-r cur-x cur-y)
+    (setf cur-x (elt point 0))
+    (setf cur-y (elt point 1))
+    (setf cur-r (sqrt (+ (sqr (- cur-x (elt center 0))) (sqr (- cur-y (elt center 1))))))
+    (setf cur-s (angle-between-2pts center (list cur-x cur-y)))
+    (setf cur-s (+ cur-s s))
+    (setf cur-x (+ (* cur-r (cos cur-s)) (elt center 0)))
+    (setf cur-y (+ (* cur-r (sin cur-s)) (elt center 1)))
+    (list cur-x cur-y)))    
+
+(defgeneric get-genobj-traj (gobj))	    
+(defmethod get-genobj-traj ((gobj genobj))
+  (let (trajectory-list pre-vertices xvel1 yvel1 rvel1 center)
+    (setf pre-vertices (objpoints gobj))
+    (setf xvel1 (xvel gobj))
+    (setf yvel1 (yvel gobj))
+    (setf rvel1 (rotv gobj))
+    (setf center (list (+ (xcoord gobj) xvel1) (+ (ycoord gobj) yvel1)))    
+    (dotimes (i (length pre-vertices))
+      (let ((cur-x (elt (elt pre-vertices i) 0)) (cur-y (elt (elt pre-vertices i) 1)) (post-point nil))
+	(setf cur-x (+ cur-x xvel1))
+	(setf cur-y (+ cur-y yvel1))
+	(setf cur-x (elt (rotate-about-center center (list cur-x cur-y) rvel1) 0))
+	(setf cur-y (elt (rotate-about-center center (list cur-x cur-y) rvel1) 1))
+	(setf post-point (list cur-x cur-y))
+	(setf trajectory-list (append trajectory-list (list (list (elt pre-vertices i) post-point))))))
+    trajectory-list))
+
+(defgeneric triangulize (gobj))
+(defmethod triangulize ((gobj genobj))
+  (let ((points (objpoints gobj)) (center (list (xcoord gobj) (ycoord gobj))) (triangles nil))
+    (dotimes (i (length points))
+      (if (< i (- (length points) 1))
+	  (setf triangles (append triangles (list (list center (elt points i) (elt points (+ i 1))))))
+	  (setf triangles (append triangles (list (list center (elt points 0) (elt points i)))))))
+    triangles))
+
+(defgeneric genobj-area (gobj))
+(defmethod genobj-area ((gobj genobj))
+  (let ((objtriangles (triangulize gobj)) (area 0))
+    (dotimes (i (length objtriangles))
+      (setf area (+ area (triangle-area (elt objtriangles i)))))
+    area))
+
+(defgeneric shrink-genobj (gobj percent))
+(defmethod shrink-genobj ((gobj genobj) percent)
+  (let ((points (objpoints gobj)) (point-pos 0) (point1 nil) (center (coords gobj)) (angle 0) (distance 0))
+    (setf point-pos (random (length points)))
+    (setf point1 (elt points point-pos))
+    (setf angle (+ (angle-between-2pts center point1) (random-between -0.1 0.1)))
+    (setf distance (- (distance center point1) percent))
+    (setf (elt (objpoints gobj) point-pos) (list (+ (elt center 0) (* distance (cos angle))) (+ (elt center 1) (* distance (sin angle)))))))
+     
+(defgeneric collision-test (gobj1 gobj2))
+(defmethod collision-test ((gobj1 genobj) (gobj2 genobj))
+  (let ((triangles2 (triangulize gobj2)) (points1 (objpoints gobj1)))
+    (dotimes (i (length points1))
+      (dotimes (j (length triangles2))
+	(if (inside-trianglep (elt points1 i) (elt triangles2 j))
+	    (progn
+	      (return-from collision-test t))))))
+  nil)
+
+(defgeneric floor-collision-test (gobj))
+(defmethod floor-collision-test ((gobj genobj))
+  (let ((points1 (objpoints gobj)))
+    (dotimes (i (length points1))
+      (if (<= (elt (elt points1 i) 1) 1)
+	  (return-from floor-collision-test t))))
+  nil)
+  
+(defgeneric damage-obj (gobj damage))
+(defmethod damage-obj ((gobj genobj) damage)
+  (setf (objarea gobj) (- (objarea gobj) damage)))
+
+(defun remove-damaged-objs ()
+  (let ((objects-to-remove nil))
+    (dotimes (i (length *object-list*))
+      (if (<= (objarea (elt *object-list* i)) 0)
+	  (setf objects-to-remove (append objects-to-remove (list i)))))
+    (setf *object-list* (remove-ns-from-list *object-list* objects-to-remove))))
+
+(defun collision-detection ()
+  (let ((missile-collisions nil) (meteor-collisions nil) (moon-base-collisions nil) (gunfire-collisions nil) (gunfire-meteor-collisions nil))
+    (dotimes (i (length *object-list*))
+      (if (<= (distance (coords (elt *object-list* i)) (list (/ *width* 2) 0)) (+ 30 (* 2.1 (objradius (elt *object-list* i)))))
+	  (if (collision-test *moon-base* (elt *object-list* i))
+	      (setf moon-base-collisions (append moon-base-collisions (list i)))))
+      (if (<= (ycoord (elt *object-list* i)) (* 2.1 (objradius (elt *object-list* i))))
+	  (if (floor-collision-test (elt *object-list* i))
+	      (setf moon-base-collisions (append moon-base-collisions (list i)))))
+      (dotimes (j (length *missile-list*))
+	(if (<= (distance (coords (elt (elt *missile-list* j) 1)) (coords (elt *object-list* i))) (* 2.1 (objradius (elt *object-list* i))))
+	    (if (collision-test (elt (elt *missile-list* j) 1) (elt *object-list* i))
+		(progn
+		  (setf missile-collisions (append missile-collisions (list (elt (elt *missile-list* j) 0))))
+		  (setf meteor-collisions (append meteor-collisions (list i)))))))
+      (dotimes (k (length *gunfire-list*))
+	(if (<= (distance (coords (elt (elt *gunfire-list* k) 1)) (coords (elt *object-list* i))) (* 2.1 (objradius (elt *object-list* i))))
+	    (if (collision-test (elt (elt *gunfire-list* k) 1) (elt *object-list* i))
+		(progn
+		  (setf gunfire-collisions (append gunfire-collisions (list (elt (elt *gunfire-list* k) 0))))
+		  (setf gunfire-meteor-collisions (append gunfire-meteor-collisions (list i))))))))
+    (remove-duplicates moon-base-collisions :test #'=)
+    (list meteor-collisions missile-collisions moon-base-collisions gunfire-collisions gunfire-meteor-collisions)))
+
+(defun remove-n-from-list (listo n)
+  (let ((temp-list nil))
+    (dotimes (i (length listo))
+      (if (not (= i n))
+	  (setf temp-list (append temp-list (list (elt listo i))))))
+    temp-list))
+
+(defun remove-ns-from-list (listo nlist)
+  (let ((temp-list listo) (temp-nlist (sort nlist '>)))
+    (dotimes (j (length temp-nlist))
+      (setf temp-list (remove-n-from-list temp-list (elt temp-nlist j))))
+    temp-list))
+
+(defun remove-missiles (remove-list)
+  (dotimes (i (length remove-list))
+    (setf *missile-list* (remove-if #'(lambda (x) (= (elt x 0) (elt remove-list i))) *missile-list*))))
+
+(defun remove-gunfire (remove-list)
+  (dotimes (i (length remove-list))
+    (setf *gunfire-list* (remove-if #'(lambda (x) (= (elt x 0) (elt remove-list i))) *gunfire-list*))))
+
+
+(defun physics ()
+  (dotimes (i (length *object-list*))
+    (if (not (= (rotv (elt *object-list* i)) 0))
+	(rotate-genobj-by (elt *object-list* i) (rotv (elt *object-list* i))))
+    (if (not (and (= (xvel (elt *object-list* i)) 0) (= (yvel (elt *object-list* i)) 0)))
+	(move-genobj-by (elt *object-list* i) (xvel (elt *object-list* i)) (yvel (elt *object-list* i))))))
+
+    
+
+(defun collision-physics ()
+  (let ((collisions (collision-detection )))
+    (dotimes (i (length (elt collisions 0)))
+      (shrink-genobj (elt *object-list* (elt (elt collisions 0) i)) 15)
+      (damage-obj (elt *object-list* (elt (elt collisions 0) i)) *missile-dmg*))
+    (dotimes (j (length (elt collisions 2)))
+      (setf *moon-base-hp* (- *moon-base-hp* (objarea (elt *object-list* (elt (elt collisions 2) j)))))
+      (setf (objarea (elt *object-list* (elt (elt collisions 2) j))) -1))
+    (dotimes (k (length (elt collisions 4)))
+      (setf (xvel (elt *object-list* (elt (elt collisions 4) k))) (* (xvel (elt *object-list* (elt (elt collisions 4) k))) *gunfire-knockback*))
+      (setf (yvel (elt *object-list* (elt (elt collisions 4) k))) (* (yvel (elt *object-list* (elt (elt collisions 4) k))) *gunfire-knockback*))
+      (damage-obj (elt *object-list* (elt (elt collisions 4) k)) *gunfire-dmg*))
+    (remove-damaged-objs)
+    (if (not (= (length (elt collisions 3)) 0))
+	(remove-gunfire (elt collisions 3)))
+    (if (not (= (length (elt collisions 1)) 0))
+	(remove-missiles (elt collisions 1)))))
+	
+(defun make-parabola (xy1 xy2 xy3 n start incr)
+  (make-instance 'paraobj
+		 :function (parabola xy1 xy2 xy3)
+		 :point-list (parabola-points xy1 xy2 xy3 n start incr)
+		 :defing-points (list xy1 xy2 xy3)))
+
+(defparameter *the-parabola* (make-parabola (list 0 (/ *width* 2)) '(2 5) '(3 8) 10 (/ *width* 2) 10))
+
+(defun point-onscreenp (point)
+  (if (and (>= (elt point 0) 0) (<= (elt point 0) *width*) (>= (elt point 1) 0) (<= (elt point 1) *height*))
+      t
+      nil))
+
+(defun points-onscreenp (point-list)
+  (dotimes (i (length point-list))
+    (if (point-onscreenp (elt point-list i))
+	(return-from points-onscreenp t))))
+
+(defun move-missiles (n)
+  (let ((remove-list nil))
+    (dotimes (j (length *missile-list*))
+      (let ((missile-path (objpath (elt (elt *missile-list* j) 1))) (current-position (coords (elt (elt *missile-list* j) 1))) (current-distance 0) (current-angle 0))
+	(dotimes (i (length missile-path))
+	  (setf current-distance (distance current-position (list (elt (elt missile-path i) 1) (elt (elt missile-path i) 0))))
+	  (if (and (> (elt (elt missile-path i) 0) (elt current-position 1)) (>= current-distance n))
+	      (if (> current-distance (+ n 1))
+		  (progn
+		    (setf current-angle (angle-between-2pts current-position (list (elt (elt missile-path i) 1) (elt (elt missile-path i) 0))))
+		    (move-genobj-to (elt (elt *missile-list* j) 1) (+ (elt current-position 0) (* n (cos current-angle))) (+ (elt current-position 1) (* n (sin current-angle))))
+		    (return nil))
+		  (progn
+		    (move-genobj-to (elt (elt *missile-list* j) 1) (elt (elt missile-path i) 1) (elt (elt missile-path i) 0))
+		    (return nil))))
+	   
+	  (if (or (> (ycoord (elt (elt *missile-list* j) 1)) (+ *height* 10)) 
+		  (and (not (point-onscreenp current-position)) (not (points-onscreenp (last missile-path (- (length missile-path) i))))))
+	     (setf remove-list (append remove-list (list (elt (elt *missile-list* j) 0))))))))
+    (remove-missiles remove-list))
+  nil)
+
+(defun move-gunfire ()
+  (let ((remove-list nil))
+  (dotimes (i (length *gunfire-list*))
+    (move-genobj-by (elt (elt *gunfire-list* i) 1) (xvel (elt (elt *gunfire-list* i) 1)) (yvel (elt (elt *gunfire-list* i) 1)))
+    (if (not (point-onscreenp (coords (elt (elt *gunfire-list* i) 1))))
+	(setf remove-list (append remove-list (list (elt (elt *gunfire-list* i) 0))))))
+  (remove-gunfire remove-list)))
+	
+(defgeneric change-point (pobj point x1 y1))
+(defmethod change-point ((pobj paraobj) point x1 y1)
+  (let ((new-def-points (para-def-points pobj)))
+    (setf (elt new-def-points point) (list x1 y1))
+    (setf (para-def-points pobj) new-def-points)
+    (setf (para-points pobj) (parabola-points (elt new-def-points 0) (elt new-def-points 1) (elt new-def-points 2) 100 0 (+ (/ *height* 100) 1)))
+    (setf (para-function pobj) (parabola (elt new-def-points 0) (elt new-def-points 1) (elt new-def-points 2))))
+  nil)
+
+(defgeneric draw-paraobj (pobj))
+(defmethod draw-paraobj ((pobj paraobj))
+  (let ((points (para-points pobj)))
+    (gl:color 1 0 0)
+    (gl:begin :points)
+    (dotimes (i (length points))
+	 (gl:vertex (elt (elt points i) 1) (elt (elt points i) 0))))
+    (gl:end))
+
+(defun random-meteor-rain (size speed)
+  (let ((start (list (random-between 0 *width*) (+ *height* 100))) (finish (list (random-between 0 *width*) 0)) (angle 0) (xvel1 0) (yvel1 0))
+    (setf angle (angle-between-2pts start finish))
+    (setf xvel1 (* (cos angle) speed))
+    (setf yvel1 (* (sin angle) speed))
+    (create-convex-meteor-obj (elt start 0) (elt start 1) xvel1 yvel1 (random-between -0.2 0.2) (random-between 10 size) (round (random-between 5 10)))))
+;;    (create-convex-meteor-obj (elt start 0) (elt start 1) xvel1 yvel1 (random-between -0.2 0.2) (random-between (/ size 2) (* size 2)) (round (random-between 5 10)))))
+ 
+(defun make-it-rain (n size speed)
+  (random-meteor-rain size speed)
+  (setf *meteor-count* (+ 1 *meteor-count*))
+  (dotimes (i n)
+    (if (< (random-between 0 1) 0.05)
+	(progn
+	  (setf *meteor-count* (+ 1 *meteor-count*))
+	  (random-meteor-rain size speed)))))
+    				  
+;;makes the window class	 
+(defclass my-window (glut:window)
+  ()
+  (:default-initargs :width *width* :height *height* :pos-x 10 :pos-y 10
+                     :mode '(:double :rgb :depth) :title "bourtange.lisp"))
+
+(defmethod glut:display-window :before ((w my-window))
+  (if (not *exiting*)
+      (progn
+	(glut:timer-func 30 (cffi:callback update) 0)
+	(glut:timer-func *missile-refresh-rate* (cffi:callback reload) 0)
+	(glut:timer-func *rain-frequency* (cffi:callback raining) 0)
+	(glut:timer-func *gunfire-rate* (cffi:callback gunfiring) 0)
+	(glut:timer-func *cash-frequency* (cffi:callback payments) 0)
+	(gl:clear-color 0 0 0 0)
+	(gl:shade-model :smooth))))
+
+(defmethod glut:display ((w my-window))
+  (if (not *paused*)
+      (progn
+	(draw-object-list)
+	(draw-missile-list)
+	(draw-gunfire-list)
+	(draw-paraobj *the-parabola*)
+	(draw-missile-mag)
+	(draw-genobj *moon-base2*)
+	(setf (objcolor *moon-base*) (list 1 (/ *moon-base-hp* *moon-base-hp-max*) (/ *moon-base-hp* *moon-base-hp-max*)))
+	(draw-genobj *moon-base*)
+	(gl:raster-pos 180 9)
+	(glut:bitmap-string glut:+bitmap-9-by-15+ (format nil "~a~a" "Cash-monies: " *cash-monies*))
+	(gl:raster-pos 10 9)
+	(glut:bitmap-string glut:+bitmap-9-by-15+ (format nil "~a~a~a" "Shields at " (round (* 100 (/ *moon-base-hp* *moon-base-hp-max*))) "%")))
+      (progn
+	(gl:raster-pos 10 (- *height* 15))
+	(glut:bitmap-string glut:+bitmap-9-by-15+ (format nil "~a" "1- Repair Damage: 10%  500 cash-monies."))
+	(gl:raster-pos 10 (- *height* 30))
+	(glut:bitmap-string glut:+bitmap-9-by-15+ (format nil "~a~a~a" "2- Increase Defense: +" (round (* 100 (/ 500 *moon-base-hp-max*))) "%  2000 cash-monies."))
+	(gl:raster-pos 10 (- *height* 45))
+	(glut:bitmap-string glut:+bitmap-9-by-15+ (format nil "~a~,2f~a~,2f~a" "3- Increase gun-turret fire rate: " (/ 1000 *gunfire-rate*) "/sec -> " (/ 1000 (round (* *gunfire-rate* (+ 1 (/ (* 0.1 (- 30 *gunfire-rate*)) 250))))) "/sec  1000 cash-monies."))
+	(gl:raster-pos 10 (- *height* 60))
+	(glut:bitmap-string glut:+bitmap-9-by-15+ (format nil "~a~a~a~a~a" "4- Increase gun-turrent damage: " *gunfire-dmg* " -> " (+ *gunfire-dmg* 5) "  1500 cash-monies."))
+	(gl:raster-pos 10 (- *height* 75))
+	(glut:bitmap-string glut:+bitmap-9-by-15+ (format nil "~a~a~a~a~a" "5- Increase missile speed: " *missile-speed* " -> " (+ *missile-speed* 2) "  2500 cash-monies."))
+	(gl:raster-pos 10 (- *height* 90))
+	(glut:bitmap-string glut:+bitmap-9-by-15+ (format nil "~a~a~a~a~a" "6- Increase missile damage: " *missile-dmg* " -> " (+ *missile-dmg* 25) "  2000 cash-monies."))
+	(gl:raster-pos 10 (- *height* 105))
+	(glut:bitmap-string glut:+bitmap-9-by-15+ (format nil "~a~,1f~a" "7- Increase missile size: +" (* 100 (/ 0.2 *missile-size*)) "%  2500 cash-monies."))
+	(gl:raster-pos 10 (- *height* 120))
+	(glut:bitmap-string glut:+bitmap-9-by-15+ (format nil "~a~a~a~a~a" "8- Increase missile magazine: " *missile-max* " -> " (+ *missile-max* 1) "  2000 cash-monies."))
+	(gl:raster-pos 10 (- *height* 135))
+	(glut:bitmap-string glut:+bitmap-9-by-15+ (format nil "~a~,2f~a~,2f~a" "9- Increase missile reload rate: " (/ 1000 *missile-refresh-rate*) "/sec -> " (/ 1000 (* *missile-refresh-rate* (+ 1(/ (* 0.05 (- 30 *missile-refresh-rate*)) 500)))) "/sec  2000 cash-monies."))
+	(gl:raster-pos 10 120)
+	(glut:bitmap-string glut:+bitmap-9-by-15+ (format nil "~a~a~a" "Shields at " (round (* 100 (/ *moon-base-hp* *moon-base-hp-max*))) "%"))
+	(gl:raster-pos 10 100)
+	(glut:bitmap-string glut:+bitmap-9-by-15+ (format nil "~a~a~a" "You have " *cash-monies* " cash-monies.")))))
+  
+
+;; (Reshapes and redraws if the window is resized.
+;;(defmethod glut:reshape ((w my-window) width height)
+;;  (gl:viewport 0 0 width height)
+;;  (gl:matrix-mode :projection)
+;;  (gl:load-identity)
+;;  (if (<= width height)
+;;      (glu:ortho-2d 0 30 0 (* 30 (/ height width)))
+;;      (glu:ortho-2d 0 (* 30 (/ width height)) 0 30))
+;;  (gl:matrix-mode :modelview))
+
+(defmethod glut:reshape ((w my-window) width height)
+  (glu:ortho-2d 0 width 0 height))
+
+;;listens for a keypress.
+(defmethod glut:keyboard ((w my-window) key x y)
+  (declare (ignore x y))
+  (case key
+    (#\1 (if (and *paused* (>= *cash-monies* 500) (not (= *moon-base-hp* *moon-base-hp-max*)))
+	     (progn
+	       (setf *cash-monies* (- *cash-monies* 500))
+	       (setf *moon-base-hp* (+ *moon-base-hp* (/ *moon-base-hp-max* 10)))
+	       (if (> *moon-base-hp* *moon-base-hp-max*)
+		   (setf *moon-base-hp* *moon-base-hp-max*)))))
+    (#\2 (if (and *paused* (>= *cash-monies* 2000))
+	     (progn
+	       (setf *cash-monies* (- *cash-monies* 2000))
+	       (setf *moon-base-hp* (+ *moon-base-hp* (* (/ *moon-base-hp* *moon-base-hp-max*) 500)))
+	       (setf *moon-base-hp-max* (+ *moon-base-hp-max* 500)))))
+    (#\3 (if (and *paused* (>= *cash-monies* 1000))
+	     (progn
+	       (setf *cash-monies* (- *cash-monies* 1000))
+	       (setf *gunfire-rate* (round (* *gunfire-rate* (+ 1 (/ (* 0.1 (- 30 *gunfire-rate*)) 250))))))))
+    (#\4 (if (and *paused* (>= *cash-monies* 1500))
+	     (progn
+	       (setf *cash-monies* (- *cash-monies* 1500))
+	       (setf *gunfire-dmg* (+ *gunfire-dmg* 5)))))
+    (#\5 (if (and *paused* (>= *cash-monies* 2500))
+	     (progn
+	       (setf *cash-monies* (- *cash-monies* 2500))
+	       (setf *missile-speed* (+ *missile-speed* 2)))))
+    (#\6 (if (and *paused* (>= *cash-monies* 2000))
+	     (progn
+	       (setf *cash-monies* (- *cash-monies* 2000))
+	       (setf *missile-dmg* (+ *missile-dmg* 25)))))
+    (#\7 (if (and *paused* (>= *cash-monies* 2500))
+	     (progn
+	       (setf *cash-monies* (- *cash-monies* 2500))
+	       (setf *missile-size* (+ *missile-size* 0.2)))))
+    (#\8 (if (and *paused* (>= *cash-monies* 2000))
+	     (progn
+	       (setf *cash-monies* (- *cash-monies* 2000))
+	       (setf *missile-max* (+ *missile-max* 1))
+	       (make-missile-mag *missile-max*))))
+    (#\9 (if (and *paused* (>= *cash-monies* 2000))
+	     (progn
+	       (setf *cash-monies* (- *cash-monies* 2000))
+	       (setf *missile-refresh-rate* (round (* *missile-refresh-rate* (+ 1(/ (* 0.05 (- 30 *missile-refresh-rate*)) 500))))))))
+    (#\Esc  (setf *exiting* t)
+	    (glut:destroy-current-window))
+    (#\Space (setf *paused* (not *paused*)))))
+  
+
+
+;;(defmethod glut:special ((w my-window) key x y)
+;;  (declare (ignore x y))
+;;  (case key
+;;    (:KEY-UP (move-genobj-by *moon-base* 0 2)
+;;	     (glut:post-redisplay))))
+
+(defun mouse-down (button x2 y2)
+  (declare (ignore x2 y2))
+  (if (= button 0)
+      (setf *gunfiring* t))
+;;     (create-gunfire-obj x2 (- *height* y2) *gunfire-speed* 0 5))
+;;     (create-convex-meteor-obj x2 (- *height* y2) (random-between -1 1) (random-between -3 -0.5) (random-between -0.3 0.3) (random-between 5 20) (+ 5 (random 5))))
+  (if (and (= button 1) (> *missile-mag* 0))
+      (progn
+	(setf *missile-mag* (- *missile-mag* 1))
+	(create-missile (para-points *the-parabola*)))))
+
+(defun mouse-up (button x2 y2)
+  (declare (ignore x2 y2))
+  (if (= button 0)
+	(setf *gunfiring* nil)))
+
+(defmethod glut:mouse ((w my-window) button state x1 y1)
+  (case button
+    (:left-button 
+     (if (and (eq state :down) (not (eq state :up)))
+	 (mouse-down 0 x1 y1))
+     (if (eq state :up)
+	 (mouse-up 0 x1 y1)))
+    (:right-button
+     (if (eq state :down)
+	 (mouse-down 1 x1 y1)))))
+
+(defmethod glut:passive-motion ((w my-window) x1 y1)
+  (if (> x1 *width*)
+      (setf x1 *width*))
+  (if (< x1 0)
+      (setf x1 0))
+  (setf *gunfire-coords* (list x1 y1))
+  (change-parabola x1 y1))
+
+(defmethod glut:motion ((w my-window) x1 y1)
+  (if (> x1 *width*)
+      (setf x1 *width*))
+  (if (< x1 0)
+      (setf x1 0))
+  (setf *gunfire-coords* (list x1 y1))
+  (change-parabola x1 y1))
+
+(defgeneric flip-para-obj (pobj))
+(defmethod flip-para-obj ((pobj paraobj))
+  (dotimes (i (length (para-points pobj)))
+    (setf (elt (elt (para-points pobj) i) 1) (- *width* (elt (elt (para-points pobj) i) 1)))))
+
+(defun elt-n-max (listo n)
+  (let ((max (elt (elt listo 0) n)))
+    (dotimes (i (length listo))
+      (if (> (elt (elt listo i) n) max)
+	  (setf max (elt (elt listo i) n))))
+    max))
+
+(defun elt-n-min (listo n)
+  (let ((min (elt (elt listo 0) n)))
+    (dotimes (i (length listo))
+      (if (< (elt (elt listo i) n) min)
+	  (setf min (elt (elt listo i) n))))
+    min))
+
+(defun change-parabola (x1 y1)
+  (change-point *the-parabola* 2 (- *height* y1) x1)
+  (change-point *the-parabola* 1 (- *height* y1 25) (+ x1 (/ (- x1 (/ *width* 2)) 25)))
+  (if nil
+	(if (< x1 (/ *width* 2))
+	    (let ((edge-point (edge-parabola (list (- *height* y1) x1) (/ *width* 2) 0)))
+	      (change-point *the-parabola* 1 (elt edge-point 0) (elt edge-point 1)))
+	    (let ((edge-point (edge-parabola (list (- *height* y1) x1) (/ *width* 2) *width*)))
+	      (change-point *the-parabola* 1 (elt edge-point 0) (elt edge-point 1))))))
+      
+
+
+
+     	  
+(defun start (&optional godmode starting-cash)
+  (setf *exiting* nil)
+  (defparameter *godmode* godmode)
+  (defparameter *the-parabola* (make-parabola (list 0 (/ *width* 2)) '(2 5) '(3 8) 10 (/ *width* 2) 10))
+  (defparameter *object-list* (list ))
+  (defparameter *meteor-count* 0)
+  (defparameter *missile-list* nil)
+  (defparameter *missile-count* 0)
+  (defparameter *missile-mag* 8)
+  (defparameter *missile-max* 8)
+  (make-missile-mag *missile-max*)
+  (defparameter *missile-refresh-rate* 550)
+  (defparameter *missile-speed* 22)
+  (defparameter *missile-dmg* 350)
+  (defparameter *missile-size* 5)
+  (defparameter *gunfire-list* nil)
+  (defparameter *gunfire-speed* 22)
+  (defparameter *gunfire-dmg* 30)
+  (defparameter *gunfire-knockback* 0.969)
+  (defparameter *gunfire-rate* 250)
+  (defparameter *gunfiring* nil)
+  (defparameter *gunfire-coords* (list 0 0))
+  (defparameter *gunfire-count* 0)
+  (defparameter *explosion-list* nil)
+  (defparameter *height* 500)
+  (defparameter *width* 800)
+  (defparameter *exiting* nil)
+  (defparameter *paused* nil)
+  (defparameter *initial-rain-frequency* 3000)
+  (defparameter *rain-frequency* *initial-rain-frequency*)
+  (defparameter *rain-number* 1)
+  (defparameter *initial-rain-size* 11)
+  (defparameter *rain-size* *initial-rain-size*)
+  (defparameter *rain-speed* 3.5)
+  (defparameter *moon-base-hp* 5000)
+  (defparameter *moon-base-hp-max* 5000)
+  (if starting-cash
+      (defparameter *cash-monies* starting-cash)
+      (defparameter *cash-monies* 0))
+  (defparameter *cash-frequency* 1000)
+  (defparameter *cash-size* 150)
+  (glut:display-window (make-instance 'my-window)))
+
+(cffi:defcallback update :void ((value :int))
+  (declare (ignore value))
+  (if (and (<= *moon-base-hp* 0) (not *godmode*))
+      (end-game ))
+   (if (and (not *exiting*) (= 1 (glut:get-window)))
+      (progn
+	(if (not *paused*)
+	    (progn
+	      (collision-physics )
+	      (physics )
+	      (move-missiles *missile-speed*)
+	      (move-gunfire)
+	      (glut:swap-buffers )
+	      (gl:clear :color-buffer)
+	      (glut:post-redisplay ))
+	    (progn
+	      (glut:swap-buffers )
+	      (gl:clear :color-buffer)
+	      (glut:post-redisplay )))
+	(glut:timer-func 30 (cffi:callback update) 0))))
+
+(cffi:defcallback reload :void ((value :int))
+  (declare (ignore value))
+  (if (and (not *exiting*) (= 1 (glut:get-window)))
+      (progn
+	(if (and (< *missile-mag* *missile-max*) (not *paused*))
+	    (setf *missile-mag* (+ *missile-mag* 1)))
+	(glut:timer-func *missile-refresh-rate* (cffi:callback reload) 0))))
+	  
+
+(cffi:defcallback raining :void ((value :int))
+  (declare (ignore value))
+  (if (and (not *exiting*) (= 1 (glut:get-window)))
+      (progn
+	(if (not *paused*)
+	    (progn
+	      (make-it-rain *rain-number* *rain-size* *rain-speed*)
+	      (setf *rain-size* (+ *initial-rain-size*  (* (sqrt *meteor-count*) 2)))
+	      (setf *rain-number* (+ 1 (round (/ *meteor-count* 50))))
+	      (setf *rain-frequency* (- *initial-rain-frequency* (* 7 *meteor-count*)))))
+	(glut:timer-func *rain-frequency* (cffi:callback raining) 0))))
+
+
+(cffi:defcallback gunfiring :void ((value :int))
+  (declare (ignore value))
+  (if (and (not *exiting*) (=  1 (glut:get-window)))
+      (progn
+	(if (and (not *paused*) *gunfiring*)
+	    (create-gunfire-obj (elt *gunfire-coords* 0) (- *height* (elt *gunfire-coords* 1)) *gunfire-speed* 0 6))
+	(glut:timer-func *gunfire-rate* (cffi:callback gunfiring) 0))))
+
+
+(cffi:defcallback payments :void ((value :int))
+  (declare (ignore value))
+  (if (and (not *exiting*) (= 1 (glut:get-window)))
+      (progn
+	(if (not *paused*)
+	    (setf *cash-monies* (round (+ (* (/ *moon-base-hp* *moon-base-hp-max*) (+ *cash-size* (* (sqrt *meteor-count*)) 5)) *cash-monies*))))
+	(glut:timer-func *cash-frequency* (cffi:callback payments) 0))))
+
+  
+
+  
+     
+  
